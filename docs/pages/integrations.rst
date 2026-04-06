@@ -150,7 +150,7 @@ No special integration is required — the package works out-of-the-box with
 ``django-modern-rest``. Simply install it, include its URLs in your main
 urlconf, and add the desired check apps to ``INSTALLED_APPS``.
 
-For advanced configuration, please refer to the `django-health-check documentation <https://github.com/codingjoe/django-health-check#readme>`_.
+For advanced configuration, please refer to the `django-health-check documentation <https://codingjoe.dev/django-health-check>`_.
 
 
 CORS Headers
