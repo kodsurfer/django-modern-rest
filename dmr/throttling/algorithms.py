@@ -290,3 +290,121 @@ class LeakyBucket(BaseThrottleAlgorithm):
     def _ceil_div(self, dividend: int, divisor: int) -> int:
         """Integer ceiling division for non-negative values."""
         return (dividend + divisor - 1) // divisor
+
+
+class TokenBucket(BaseThrottleAlgorithm):
+    """
+    Token bucket algorithm.
+
+    Tokens accumulate at a constant rate, max_requests tokens per duration_in_seconds.
+    Each request consumes one token. Bursts up to the full bucket size are allowed.
+
+    Internally, tokens are stored scaled by ``duration_in_seconds``:
+        scaled_tokens = tokens * duration_in_seconds
+    Capacity becomes ``max_requests * duration_in_seconds``.
+    - Each request consumes ``duration_in_seconds`` scaled units.
+    - Refill rate is ``max_requests`` scaled units per second.
+    - The bucket never exceeds capacity.
+
+    .. seealso::
+        https://en.wikipedia.org/wiki/Token_bucket
+    """
+
+    __slots__ = ()
+
+    @override
+    def access(
+        self,
+        endpoint: 'Endpoint',
+        controller: 'Controller[BaseSerializer]',
+        throttle: 'SyncThrottle | AsyncThrottle',
+        cache_object: CachedRateLimit | None,
+    ) -> CachedRateLimit:
+        """Check access; raise when not enough tokens are available."""
+        cache_object = self._process_cache(throttle, cache_object)
+        if cache_object['history'][0] < throttle.duration_in_seconds:
+            raise TooManyRequestsError(
+                headers=self._report_usage(
+                    endpoint,
+                    controller,
+                    throttle,
+                    cache_object,
+                    cache_object['time'],
+                ),
+            )
+        return cache_object
+
+    @override
+    def record(
+        self,
+        endpoint: 'Endpoint',
+        controller: 'Controller[BaseSerializer]',
+        throttle: 'SyncThrottle | AsyncThrottle',
+        cache_object: CachedRateLimit,
+    ) -> CachedRateLimit:
+        """Record successful access by consuming one token."""
+        cache_object['history'][0] -= throttle.duration_in_seconds
+        return cache_object
+
+    @override
+    def report_usage(
+        self,
+        endpoint: 'Endpoint',
+        controller: 'Controller[BaseSerializer]',
+        throttle: 'SyncThrottle | AsyncThrottle',
+        cache_object: CachedRateLimit | None,
+    ) -> dict[str, str]:
+        """Report throttling usage without incrementing."""
+        cache_object = self._process_cache(throttle, cache_object)
+        return self._report_usage(
+            endpoint,
+            controller,
+            throttle,
+            cache_object,
+            cache_object['time'],
+            report_all=False,
+        )
+
+    def _process_cache(
+        self,
+        throttle: 'SyncThrottle | AsyncThrottle',
+        cache_object: CachedRateLimit | None,
+    ) -> CachedRateLimit:
+        now = int(time.time())
+        capacity_scaled = throttle.max_requests * throttle.duration_in_seconds
+
+        if cache_object is None:
+            return CachedRateLimit(history=[capacity_scaled], time=now)
+
+        elapsed = now - cache_object['time']
+        tokens_scaled = cache_object['history'][0] + elapsed * throttle.max_requests
+        tokens_scaled = min(capacity_scaled, tokens_scaled)
+        return CachedRateLimit(history=[tokens_scaled], time=now)
+
+    def _report_usage(
+        self,
+        endpoint: 'Endpoint',
+        controller: 'Controller[BaseSerializer]',
+        throttle: 'SyncThrottle | AsyncThrottle',
+        cache_object: CachedRateLimit,
+        now: int,
+        *,
+        report_all: bool = True,
+    ) -> dict[str, str]:
+        remaining = cache_object['history'][0] // throttle.duration_in_seconds
+        if remaining <= 0:
+            needed_scaled = throttle.duration_in_seconds - cache_object['history'][0]
+            reset = self._ceil_div(needed_scaled, throttle.max_requests)
+        else:
+            reset = 0
+        return throttle.collect_response_headers(
+            endpoint,
+            controller,
+            remaining=remaining,
+            reset=reset,
+            report_all=report_all,
+        )
+
+    def _ceil_div(self, dividend: int, divisor: int) -> int:
+        """Integer ceiling division for non‑negative values."""
+        return (dividend + divisor - 1) // divisor
